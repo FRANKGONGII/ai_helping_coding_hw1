@@ -10,14 +10,14 @@ TEMPLATE_FILE = "templates.json"
 class SimpleWatermarkApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("水印工具 - 滚动操作面板版")
+        self.root.title("水印工具 - 带字体大小调节版")
         self.images = []
         self.current_image = None
         self.current_path = None
         self.current_color = (255, 255, 255)
         self.shadow_enabled = tk.BooleanVar(value=False)
         self.outline_enabled = tk.BooleanVar(value=False)
-        self.watermark_pos = None
+        self.watermark_pos = [0, 0]
         self.drag_data = {"x": 0, "y": 0}
 
         # ===== 左侧列表 =====
@@ -67,8 +67,22 @@ class SimpleWatermarkApp:
         self.text_entry.grid(row=0, column=1)
         self.text_entry.bind("<KeyRelease>", lambda e: self.update_preview())
 
+        # ==== 颜色 + 字体大小 ====
         tk.Label(settings_frame, text="颜色：").grid(row=0, column=2, sticky="w")
         tk.Button(settings_frame, text="选择颜色", command=self.choose_color).grid(row=0, column=3, sticky="w")
+
+        tk.Label(settings_frame, text="字体大小(%)：").grid(row=0, column=4, sticky="w")
+        self.font_size_var = tk.DoubleVar(value=5.0)
+        self.font_size_scale = tk.Scale(settings_frame, from_=1, to=20, resolution=0.5, orient="horizontal",
+                                        variable=self.font_size_var, command=lambda e: self.update_preview())
+        self.font_size_scale.grid(row=0, column=5, sticky="we")
+
+        self.font_size_entry = tk.Entry(settings_frame, width=5)
+        self.font_size_entry.insert(0, "5")
+        self.font_size_entry.grid(row=0, column=6, sticky="w")
+        self.font_size_entry.bind("<Return>", self.update_font_size_from_entry)
+
+        tk.Label(settings_frame, text="%").grid(row=0, column=7, sticky="w")
 
         tk.Label(settings_frame, text="透明度(%)：").grid(row=1, column=0, sticky="w")
         self.alpha_scale = tk.Scale(settings_frame, from_=0, to=100, orient="horizontal",
@@ -79,7 +93,7 @@ class SimpleWatermarkApp:
         tk.Label(settings_frame, text="位置：").grid(row=2, column=0, sticky="w")
         self.position_var = tk.StringVar(value="center")
         position_options = ["left_top", "right_top", "center", "left_bottom", "right_bottom"]
-        self.position_menu = tk.OptionMenu(settings_frame, self.position_var, "center", *position_options,
+        self.position_menu = tk.OptionMenu(settings_frame, self.position_var, *position_options,
                                            command=self.set_position)
         self.position_menu.grid(row=2, column=1, sticky="we")
 
@@ -135,7 +149,8 @@ class SimpleWatermarkApp:
 
     # ===== 字体选择 =====
     def get_font(self, img_height):
-        font_size = max(12, int(img_height * 0.05))
+        percent = self.font_size_var.get() / 100.0
+        font_size = max(12, int(img_height * percent))
         win_font = "C:\\Windows\\Fonts\\msyh.ttc"
         if os.path.exists(win_font):
             return ImageFont.truetype(win_font, font_size)
@@ -146,6 +161,15 @@ class SimpleWatermarkApp:
         if os.path.exists(mac_font):
             return ImageFont.truetype(mac_font, font_size)
         raise RuntimeError("未找到可用的TrueType字体，请安装中文字体")
+
+    def update_font_size_from_entry(self, event=None):
+        try:
+            val = float(self.font_size_entry.get())
+            if 1 <= val <= 20:
+                self.font_size_var.set(val)
+                self.update_preview()
+        except ValueError:
+            pass
 
     # ===== 图片导入 =====
     def add_images(self):
@@ -225,12 +249,9 @@ class SimpleWatermarkApp:
             else:
                 pos = ((img.width - text_w) // 2, (img.height - text_h) // 2)
 
-        # 阴影
         if shadow:
             shadow_color = (0, 0, 0, int(255 * alpha))
             draw.text((pos[0]+2, pos[1]+2), text, font=font, fill=shadow_color)
-
-        # 描边
         if outline:
             outline_color = (0, 0, 0, int(255*alpha))
             offsets = [(-1,0),(1,0),(0,-1),(0,1)]
@@ -255,15 +276,12 @@ class SimpleWatermarkApp:
             self.watermark_pos = ((self.current_image.width - 100)//2, (self.current_image.height-30)//2)
         x = self.watermark_pos[0] + dx
         y = self.watermark_pos[1] + dy
-        # 保证水印完整性
-        x = max(0, min(self.current_image.width - 50, x))
-        y = max(0, min(self.current_image.height - 20, y))
         self.watermark_pos = (x, y)
         self.drag_data["x"] = event.x
         self.drag_data["y"] = event.y
         self.update_preview()
 
-    # ===== 调整尺寸 =====
+    # ===== 其他导出逻辑同原版 =====
     def resize_image(self, img):
         mode = self.scale_mode.get()
         try:
@@ -287,7 +305,6 @@ class SimpleWatermarkApp:
             return img
         return img.resize((new_w,new_h),Image.LANCZOS)
 
-    # ===== 导出 =====
     def save_image(self, img, out_path, fmt):
         if fmt.upper()=="JPEG":
             img.convert("RGB").save(out_path,format="JPEG",quality=95)
@@ -369,7 +386,8 @@ class SimpleWatermarkApp:
             "text":self.text_entry.get(),
             "color":self.current_color,
             "alpha":self.alpha_scale.get(),
-            "position":self.position_var.get(),
+            "font_size":self.font_size_var.get(),
+            "position":self.watermark_pos,
             "shadow":self.shadow_enabled.get(),
             "outline":self.outline_enabled.get(),
             "scale_mode":self.scale_mode.get(),
@@ -392,7 +410,10 @@ class SimpleWatermarkApp:
         self.text_entry.insert(0,tpl["text"])
         self.current_color=tuple(tpl["color"])
         self.alpha_scale.set(tpl["alpha"])
-        self.position_var.set(tpl["position"])
+        self.font_size_var.set(tpl.get("font_size",5.0))
+        self.font_size_entry.delete(0,tk.END)
+        self.font_size_entry.insert(0,str(tpl.get("font_size",5.0)))
+        self.watermark_pos = tpl["position"]
         self.shadow_enabled.set(tpl.get("shadow",False))
         self.outline_enabled.set(tpl.get("outline",False))
         self.scale_mode.set(tpl.get("scale_mode","none"))
@@ -453,6 +474,6 @@ def simple_input(prompt):
 
 if __name__=="__main__":
     root=tk.Tk()
-    root.geometry("1000x700")
+    root.geometry("1100x700")
     app=SimpleWatermarkApp(root)
     root.mainloop()
