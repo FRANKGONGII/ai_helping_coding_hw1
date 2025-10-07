@@ -8,11 +8,13 @@ SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
 class SimpleWatermarkApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("水印工具 - 阶段3（文字水印+尺寸调整+格式选择）")
+        self.root.title("水印工具 - 阶段4（文字水印+阴影描边+尺寸调整+格式选择）")
         self.images = []
         self.current_image = None
         self.current_path = None
         self.current_color = (255, 255, 255)
+        self.shadow_enabled = tk.BooleanVar(value=False)
+        self.outline_enabled = tk.BooleanVar(value=False)
 
         # 左侧列表
         self.listbox = tk.Listbox(root, width=40)
@@ -61,6 +63,12 @@ class SimpleWatermarkApp:
         self.position_menu = tk.OptionMenu(settings_frame, self.position_var, *position_options,
                                            command=lambda e: self.update_preview())
         self.position_menu.grid(row=2, column=1, sticky="we")
+
+        # 新增阴影和描边勾选框
+        tk.Checkbutton(settings_frame, text="阴影", variable=self.shadow_enabled,
+                       command=self.update_preview).grid(row=3, column=0, sticky="w")
+        tk.Checkbutton(settings_frame, text="描边", variable=self.outline_enabled,
+                       command=self.update_preview).grid(row=3, column=1, sticky="w")
 
         # 导出设置
         export_frame = tk.LabelFrame(right_frame, text="导出设置")
@@ -143,7 +151,9 @@ class SimpleWatermarkApp:
         preview_img = self.apply_watermark(
             self.current_image, text, alpha, position,
             font=self.get_font(self.current_image.height),
-            color=self.current_color
+            color=self.current_color,
+            shadow=self.shadow_enabled.get(),
+            outline=self.outline_enabled.get()
         )
         preview_resized = preview_img.copy()
         preview_resized.thumbnail((400, 400))
@@ -151,7 +161,8 @@ class SimpleWatermarkApp:
         self.preview_label.config(image=self.tk_preview)
 
     # ===== 水印绘制 =====
-    def apply_watermark(self, image, text, alpha, position, font=None, color=(255, 255, 255)):
+    def apply_watermark(self, image, text, alpha, position, font=None, color=(255, 255, 255),
+                        shadow=False, outline=False):
         img = image.copy()
         txt_layer = Image.new("RGBA", img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(txt_layer)
@@ -175,6 +186,22 @@ class SimpleWatermarkApp:
             pos = ((img.width - text_w) // 2, (img.height - text_h) // 2)
 
         rgba = (*color, int(255 * alpha))
+
+        # 阴影效果
+        if shadow:
+            shadow_color = (0, 0, 0, int(255 * alpha))
+            shadow_offset = (2, 2)
+            draw.text((pos[0] + shadow_offset[0], pos[1] + shadow_offset[1]), text, font=font, fill=shadow_color)
+
+        # 描边效果
+        if outline:
+            outline_color = (0, 0, 0, int(255 * alpha))
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx != 0 or dy != 0:
+                        draw.text((pos[0] + dx, pos[1] + dy), text, font=font, fill=outline_color)
+
+        # 主文字
         draw.text(pos, text, font=font, fill=rgba)
         return Image.alpha_composite(img, txt_layer)
 
@@ -207,7 +234,6 @@ class SimpleWatermarkApp:
 
     # ===== 导出 =====
     def save_image(self, img, out_path, fmt):
-        """保存图片，处理 PNG / JPEG"""
         if fmt.upper() == "JPEG":
             img.convert("RGB").save(out_path, format="JPEG", quality=95)
         else:
@@ -236,7 +262,9 @@ class SimpleWatermarkApp:
         out_img = self.apply_watermark(
             self.current_image, text, alpha, position,
             font=self.get_font(self.current_image.height),
-            color=self.current_color
+            color=self.current_color,
+            shadow=self.shadow_enabled.get(),
+            outline=self.outline_enabled.get()
         )
         out_img = self.resize_image(out_img)
 
@@ -269,7 +297,9 @@ class SimpleWatermarkApp:
             img = Image.open(path).convert("RGBA")
             out_img = self.apply_watermark(img, text, alpha, position,
                                            font=self.get_font(img.height),
-                                           color=self.current_color)
+                                           color=self.current_color,
+                                           shadow=self.shadow_enabled.get(),
+                                           outline=self.outline_enabled.get())
             out_img = self.resize_image(out_img)
             name, _ = os.path.splitext(os.path.basename(path))
             out_path = os.path.join(out_dir, f"{prefix}{name}{suffix}.{fmt.lower()}")
