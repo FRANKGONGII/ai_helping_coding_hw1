@@ -1,50 +1,66 @@
 import os
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, colorchooser
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+TEMPLATE_FILE = "templates.json"
 
 class SimpleWatermarkApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("水印工具 - 阶段5（文字水印+阴影描边+拖拽+尺寸调整+格式选择）")
+        self.root.title("水印工具 - 滚动操作面板版")
         self.images = []
         self.current_image = None
         self.current_path = None
         self.current_color = (255, 255, 255)
         self.shadow_enabled = tk.BooleanVar(value=False)
         self.outline_enabled = tk.BooleanVar(value=False)
-        self.watermark_pos = None  # 拖拽坐标
+        self.watermark_pos = None
         self.drag_data = {"x": 0, "y": 0}
 
-        # 左侧列表
+        # ===== 左侧列表 =====
         self.listbox = tk.Listbox(root, width=40)
         self.listbox.pack(side=tk.LEFT, fill=tk.Y)
         self.listbox.bind("<<ListboxSelect>>", self.show_preview)
 
-        # 右侧布局
-        right_frame = tk.Frame(root)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # ===== 右侧滚动面板 =====
+        right_container = tk.Frame(root)
+        right_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # 预览区（Canvas，用于拖拽）
-        self.canvas = tk.Canvas(right_frame, bg="gray")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.right_canvas = tk.Canvas(right_container)
+        self.right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(right_container, orient="vertical", command=self.right_canvas.yview)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.right_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.scrollable_frame = tk.Frame(self.right_canvas)
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
+        )
+        self.right_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        # ===== 预览 Canvas =====
+        self.canvas = tk.Canvas(self.scrollable_frame, bg="gray", height=400)
+        self.canvas.pack(fill=tk.BOTH, expand=False)
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
         self.canvas.bind("<B1-Motion>", self.drag_watermark)
-        self.canvas.bind("<ButtonRelease-1>", self.end_drag)
 
-        # 控制区
-        ctrl_frame = tk.Frame(right_frame)
+        # ===== 控制区 =====
+        ctrl_frame = tk.Frame(self.scrollable_frame)
         ctrl_frame.pack(fill=tk.X)
         tk.Button(ctrl_frame, text="导入图片", command=self.add_images).pack(side=tk.LEFT)
         tk.Button(ctrl_frame, text="导入文件夹", command=self.add_folder).pack(side=tk.LEFT)
         tk.Button(ctrl_frame, text="导出当前图片", command=self.export_current_image).pack(side=tk.LEFT)
         tk.Button(ctrl_frame, text="导出全部图片", command=self.export_all_images).pack(side=tk.LEFT)
 
-        # 水印设置
-        settings_frame = tk.LabelFrame(right_frame, text="水印设置")
+        # ===== 水印设置 =====
+        settings_frame = tk.LabelFrame(self.scrollable_frame, text="水印设置")
         settings_frame.pack(fill=tk.X, pady=5)
+
         tk.Label(settings_frame, text="水印文字：").grid(row=0, column=0, sticky="w")
         self.text_entry = tk.Entry(settings_frame, width=20)
         self.text_entry.insert(0, "示例水印")
@@ -63,8 +79,8 @@ class SimpleWatermarkApp:
         tk.Label(settings_frame, text="位置：").grid(row=2, column=0, sticky="w")
         self.position_var = tk.StringVar(value="center")
         position_options = ["left_top", "right_top", "center", "left_bottom", "right_bottom"]
-        self.position_menu = tk.OptionMenu(settings_frame, self.position_var, *position_options,
-                                           command=lambda e: self.update_preview())
+        self.position_menu = tk.OptionMenu(settings_frame, self.position_var, "center", *position_options,
+                                           command=self.set_position)
         self.position_menu.grid(row=2, column=1, sticky="we")
 
         tk.Checkbutton(settings_frame, text="阴影", variable=self.shadow_enabled,
@@ -72,9 +88,22 @@ class SimpleWatermarkApp:
         tk.Checkbutton(settings_frame, text="描边", variable=self.outline_enabled,
                        command=self.update_preview).grid(row=3, column=1, sticky="w")
 
-        # 导出设置
-        export_frame = tk.LabelFrame(right_frame, text="导出设置")
+        # ===== 模板管理 =====
+        tk.Label(settings_frame, text="模板：").grid(row=4, column=0, sticky="w")
+        self.template_var = tk.StringVar(value="默认")
+        self.templates = self.load_templates()
+        if not self.templates:
+            self.templates = {}
+        self.template_menu = tk.OptionMenu(settings_frame, self.template_var, "默认")
+        self.template_menu.grid(row=4, column=1, sticky="we")
+        self.update_template_menu()
+        tk.Button(settings_frame, text="保存模板", command=self.save_current_template).grid(row=4, column=2)
+        tk.Button(settings_frame, text="删除模板", command=self.delete_template).grid(row=4, column=3)
+
+        # ===== 导出设置 =====
+        export_frame = tk.LabelFrame(self.scrollable_frame, text="导出设置")
         export_frame.pack(fill=tk.X, pady=5)
+
         tk.Label(export_frame, text="文件名前缀：").grid(row=0, column=0, sticky="w")
         self.prefix_entry = tk.Entry(export_frame, width=10)
         self.prefix_entry.grid(row=0, column=1, sticky="we")
@@ -98,6 +127,11 @@ class SimpleWatermarkApp:
         self.format_var = tk.StringVar(value="PNG")
         format_menu = tk.OptionMenu(export_frame, self.format_var, "PNG", "JPEG")
         format_menu.grid(row=4, column=1, sticky="we")
+
+        # 自动加载上一次模板
+        last_tpl = self.templates.get("_last_used")
+        if last_tpl:
+            self.load_template(last_tpl)
 
     # ===== 字体选择 =====
     def get_font(self, img_height):
@@ -139,7 +173,11 @@ class SimpleWatermarkApp:
         idx = self.listbox.curselection()[0]
         self.current_path = self.images[idx]
         self.current_image = Image.open(self.current_path).convert("RGBA")
-        self.watermark_pos = None  # 每次切换图片重置拖拽
+        self.watermark_pos = None
+        self.update_preview()
+
+    def set_position(self, val):
+        self.watermark_pos = None
         self.update_preview()
 
     def update_preview(self):
@@ -147,22 +185,17 @@ class SimpleWatermarkApp:
             return
         text = self.text_entry.get()
         alpha = self.alpha_scale.get() / 100.0
-        pos = self.watermark_pos if self.watermark_pos else self.position_var.get()
-
-        preview_img = self.apply_watermark(
-            self.current_image, text, alpha, pos,
-            font=self.get_font(self.current_image.height),
-            color=self.current_color,
-            shadow=self.shadow_enabled.get(),
-            outline=self.outline_enabled.get()
-        )
-
+        pos_to_use = self.watermark_pos if self.watermark_pos else self.position_var.get()
+        preview_img = self.apply_watermark(self.current_image, text, alpha, pos_to_use,
+                                           font=self.get_font(self.current_image.height),
+                                           color=self.current_color,
+                                           shadow=self.shadow_enabled.get(),
+                                           outline=self.outline_enabled.get())
         preview_resized = preview_img.copy()
-        preview_resized.thumbnail((600, 600))
+        preview_resized.thumbnail((400, 400))
         self.tk_preview = ImageTk.PhotoImage(preview_resized)
-
         self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_preview)
+        self.canvas.create_image(200, 200, image=self.tk_preview)
 
     # ===== 水印绘制 =====
     def apply_watermark(self, image, text, alpha, position, font=None, color=(255, 255, 255),
@@ -178,198 +211,248 @@ class SimpleWatermarkApp:
         text_w, text_h = text_size[2] - text_size[0], text_size[3] - text_size[1]
         margin = 20
 
-        # 计算绘制位置
-        if isinstance(position, str):
-            # 字符串 -> 默认位置
-            pos = self.get_pixel_position(position, text_w, text_h)
+        if isinstance(position, tuple):
+            pos = position
         else:
-            # 拖拽坐标
-            x, y = position
-            pos = (min(max(0, x), img.width - text_w), min(max(0, y), img.height - text_h))
+            if position == "left_top":
+                pos = (margin, margin)
+            elif position == "right_top":
+                pos = (img.width - text_w - margin, margin)
+            elif position == "left_bottom":
+                pos = (margin, img.height - text_h - margin)
+            elif position == "right_bottom":
+                pos = (img.width - text_w - margin, img.height - text_h - margin)
+            else:
+                pos = ((img.width - text_w) // 2, (img.height - text_h) // 2)
 
-        rgba = (*color, int(255 * alpha))
-
-        # 阴影效果
+        # 阴影
         if shadow:
             shadow_color = (0, 0, 0, int(255 * alpha))
-            shadow_offset = (2, 2)
-            draw.text((pos[0] + shadow_offset[0], pos[1] + shadow_offset[1]),
-                      text, font=font, fill=shadow_color)
+            draw.text((pos[0]+2, pos[1]+2), text, font=font, fill=shadow_color)
 
-        # 描边效果
+        # 描边
         if outline:
-            outline_color = (0, 0, 0, int(255 * alpha))
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx != 0 or dy != 0:
-                        draw.text((pos[0] + dx, pos[1] + dy), text, font=font, fill=outline_color)
+            outline_color = (0, 0, 0, int(255*alpha))
+            offsets = [(-1,0),(1,0),(0,-1),(0,1)]
+            for dx,dy in offsets:
+                draw.text((pos[0]+dx,pos[1]+dy), text, font=font, fill=outline_color)
 
-        # 主文字
+        rgba = (*color, int(255 * alpha))
         draw.text(pos, text, font=font, fill=rgba)
         return Image.alpha_composite(img, txt_layer)
 
     # ===== 拖拽 =====
     def start_drag(self, event):
-        if not self.current_image:
-            return
         self.drag_data["x"] = event.x
         self.drag_data["y"] = event.y
 
     def drag_watermark(self, event):
-        if not self.current_image:
+        if self.current_image is None:
             return
         dx = event.x - self.drag_data["x"]
         dy = event.y - self.drag_data["y"]
+        if self.watermark_pos is None:
+            self.watermark_pos = ((self.current_image.width - 100)//2, (self.current_image.height-30)//2)
+        x = self.watermark_pos[0] + dx
+        y = self.watermark_pos[1] + dy
+        # 保证水印完整性
+        x = max(0, min(self.current_image.width - 50, x))
+        y = max(0, min(self.current_image.height - 20, y))
+        self.watermark_pos = (x, y)
         self.drag_data["x"] = event.x
         self.drag_data["y"] = event.y
-
-        # 初始化拖拽坐标
-        if not self.watermark_pos:
-            font = self.get_font(self.current_image.height)
-            txt_layer = Image.new("RGBA", self.current_image.size, (255, 255, 255, 0))
-            draw = ImageDraw.Draw(txt_layer)
-            text_size = draw.textbbox((0, 0), self.text_entry.get(), font=font)
-            text_w = text_size[2] - text_size[0]
-            text_h = text_size[3] - text_size[1]
-            self.watermark_pos = self.get_pixel_position(self.position_var.get(), text_w, text_h)
-
-        x, y = self.watermark_pos
-        new_x = min(max(0, x + dx), self.current_image.width - 1)
-        new_y = min(max(0, y + dy), self.current_image.height - 1)
-        self.watermark_pos = (new_x, new_y)
         self.update_preview()
 
-    def end_drag(self, event):
-        pass
-
-    def get_pixel_position(self, pos_str, text_w, text_h):
-        margin = 20
-        w, h = self.current_image.size
-        if pos_str == "left_top":
-            return (margin, margin)
-        elif pos_str == "right_top":
-            return (w - text_w - margin, margin)
-        elif pos_str == "left_bottom":
-            return (margin, h - text_h - margin)
-        elif pos_str == "right_bottom":
-            return (w - text_w - margin, h - text_h - margin)
-        else:
-            return ((w - text_w)//2, (h - text_h)//2)
-
-    # ===== 尺寸调整 =====
+    # ===== 调整尺寸 =====
     def resize_image(self, img):
         mode = self.scale_mode.get()
         try:
             value = float(self.scale_value.get())
         except ValueError:
             return img
-
-        if value <= 0 or mode == "none":
+        if value <= 0 or mode=="none":
             return img
-
-        w, h = img.size
-        if mode == "width":
-            new_w = int(value)
-            new_h = int(h * new_w / w)
-        elif mode == "height":
-            new_h = int(value)
-            new_w = int(w * new_h / h)
-        elif mode == "percent":
-            scale = value / 100.0
-            new_w = int(w * scale)
-            new_h = int(h * scale)
+        w,h = img.size
+        if mode=="width":
+            new_w=int(value)
+            new_h=int(h*new_w/w)
+        elif mode=="height":
+            new_h=int(value)
+            new_w=int(w*new_h/h)
+        elif mode=="percent":
+            scale=value/100.0
+            new_w=int(w*scale)
+            new_h=int(h*scale)
         else:
             return img
-
-        return img.resize((new_w, new_h), Image.LANCZOS)
+        return img.resize((new_w,new_h),Image.LANCZOS)
 
     # ===== 导出 =====
     def save_image(self, img, out_path, fmt):
-        if fmt.upper() == "JPEG":
-            img.convert("RGB").save(out_path, format="JPEG", quality=95)
+        if fmt.upper()=="JPEG":
+            img.convert("RGB").save(out_path,format="JPEG",quality=95)
         else:
-            img.save(out_path, format="PNG")
+            img.save(out_path,format="PNG")
 
     def export_current_image(self):
         if self.current_image is None:
-            messagebox.showwarning("提示", "请先选择一张图片！")
+            messagebox.showwarning("提示","请先选择一张图片！")
             return
-
-        out_dir = filedialog.askdirectory(title="选择导出文件夹")
+        out_dir=filedialog.askdirectory(title="选择导出文件夹")
         if not out_dir:
             return
-
-        if os.path.abspath(os.path.dirname(self.current_path)) == os.path.abspath(out_dir):
-            messagebox.showerror("错误", "禁止导出到原图片所在文件夹！")
+        if os.path.abspath(os.path.dirname(self.current_path))==os.path.abspath(out_dir):
+            messagebox.showerror("错误","禁止导出到原图片所在文件夹！")
             return
+        text=self.text_entry.get()
+        alpha=self.alpha_scale.get()/100.0
+        position=self.watermark_pos if self.watermark_pos else self.position_var.get()
+        prefix=self.prefix_entry.get()
+        suffix=self.suffix_entry.get()
+        fmt=self.format_var.get()
 
-        text = self.text_entry.get()
-        alpha = self.alpha_scale.get() / 100.0
-        pos_to_use = self.watermark_pos if self.watermark_pos else self.position_var.get()
-        prefix = self.prefix_entry.get()
-        suffix = self.suffix_entry.get()
-        fmt = self.format_var.get()
-
-        out_img = self.apply_watermark(
-            self.current_image, text, alpha, pos_to_use,
-            font=self.get_font(self.current_image.height),
-            color=self.current_color,
-            shadow=self.shadow_enabled.get(),
-            outline=self.outline_enabled.get()
-        )
-        out_img = self.resize_image(out_img)
-        name, _ = os.path.splitext(os.path.basename(self.current_path))
-        out_path = os.path.join(out_dir, f"{prefix}{name}{suffix}.{fmt.lower()}")
-        self.save_image(out_img, out_path, fmt)
-        messagebox.showinfo("导出成功", f"已导出：{out_path}")
+        out_img=self.apply_watermark(self.current_image,text,alpha,position,
+                                     font=self.get_font(self.current_image.height),
+                                     color=self.current_color,
+                                     shadow=self.shadow_enabled.get(),
+                                     outline=self.outline_enabled.get())
+        out_img=self.resize_image(out_img)
+        name,_=os.path.splitext(os.path.basename(self.current_path))
+        out_path=os.path.join(out_dir,f"{prefix}{name}{suffix}.{fmt.lower()}")
+        self.save_image(out_img,out_path,fmt)
+        messagebox.showinfo("导出成功",f"已导出：{out_path}")
 
     def export_all_images(self):
         if not self.images:
-            messagebox.showwarning("提示", "请先导入图片！")
+            messagebox.showwarning("提示","请先导入图片！")
             return
-
-        out_dir = filedialog.askdirectory(title="选择导出文件夹")
+        out_dir=filedialog.askdirectory(title="选择导出文件夹")
         if not out_dir:
             return
-
-        prefix = self.prefix_entry.get()
-        suffix = self.suffix_entry.get()
-        text = self.text_entry.get()
-        alpha = self.alpha_scale.get() / 100.0
-        fmt = self.format_var.get()
-
-        count = 0
+        prefix=self.prefix_entry.get()
+        suffix=self.suffix_entry.get()
+        text=self.text_entry.get()
+        alpha=self.alpha_scale.get()/100.0
+        fmt=self.format_var.get()
+        count=0
         for path in self.images:
-            if os.path.abspath(os.path.dirname(path)) == os.path.abspath(out_dir):
-                messagebox.showerror("错误", f"文件 {os.path.basename(path)} 位于输出目录中，导出已取消！")
+            if os.path.abspath(os.path.dirname(path))==os.path.abspath(out_dir):
+                messagebox.showerror("错误",f"文件 {os.path.basename(path)} 位于输出目录中，导出已取消！")
                 return
-            img = Image.open(path).convert("RGBA")
-            pos_to_use = self.watermark_pos if self.watermark_pos else self.position_var.get()
-            out_img = self.apply_watermark(
-                img, text, alpha, pos_to_use,
-                font=self.get_font(img.height),
-                color=self.current_color,
-                shadow=self.shadow_enabled.get(),
-                outline=self.outline_enabled.get()
-            )
-            out_img = self.resize_image(out_img)
-            name, _ = os.path.splitext(os.path.basename(path))
-            out_path = os.path.join(out_dir, f"{prefix}{name}{suffix}.{fmt.lower()}")
-            self.save_image(out_img, out_path, fmt)
-            count += 1
-
-        messagebox.showinfo("导出完成", f"成功导出 {count} 张图片到：\n{out_dir}")
+            img=Image.open(path).convert("RGBA")
+            position=self.position_var.get()
+            out_img=self.apply_watermark(img,text,alpha,position,
+                                         font=self.get_font(img.height),
+                                         color=self.current_color,
+                                         shadow=self.shadow_enabled.get(),
+                                         outline=self.outline_enabled.get())
+            out_img=self.resize_image(out_img)
+            name,_=os.path.splitext(os.path.basename(path))
+            out_path=os.path.join(out_dir,f"{prefix}{name}{suffix}.{fmt.lower()}")
+            self.save_image(out_img,out_path,fmt)
+            count+=1
+        messagebox.showinfo("导出完成",f"成功导出 {count} 张图片到：\n{out_dir}")
 
     # ===== 颜色选择 =====
     def choose_color(self):
-        color_code = colorchooser.askcolor(title="选择水印颜色")
+        color_code=colorchooser.askcolor(title="选择水印颜色")
         if color_code:
-            self.current_color = tuple(int(c) for c in color_code[0])
+            self.current_color=tuple(int(c) for c in color_code[0])
             self.update_preview()
 
+    # ===== 模板管理 =====
+    def save_current_template(self):
+        name=simple_input("输入模板名称")
+        if not name:
+            return
+        tpl={
+            "text":self.text_entry.get(),
+            "color":self.current_color,
+            "alpha":self.alpha_scale.get(),
+            "position":self.position_var.get(),
+            "shadow":self.shadow_enabled.get(),
+            "outline":self.outline_enabled.get(),
+            "scale_mode":self.scale_mode.get(),
+            "scale_value":self.scale_value.get(),
+            "prefix":self.prefix_entry.get(),
+            "suffix":self.suffix_entry.get(),
+            "format":self.format_var.get()
+        }
+        self.templates[name]=tpl
+        self.templates["_last_used"]=name
+        self.save_templates()
+        self.update_template_menu()
+        messagebox.showinfo("模板保存","模板已保存！")
 
-if __name__ == "__main__":
-    root = tk.Tk()
+    def load_template(self,name):
+        tpl=self.templates.get(name)
+        if not tpl:
+            return
+        self.text_entry.delete(0,tk.END)
+        self.text_entry.insert(0,tpl["text"])
+        self.current_color=tuple(tpl["color"])
+        self.alpha_scale.set(tpl["alpha"])
+        self.position_var.set(tpl["position"])
+        self.shadow_enabled.set(tpl.get("shadow",False))
+        self.outline_enabled.set(tpl.get("outline",False))
+        self.scale_mode.set(tpl.get("scale_mode","none"))
+        self.scale_value.delete(0,tk.END)
+        self.scale_value.insert(0,tpl.get("scale_value","0"))
+        self.prefix_entry.delete(0,tk.END)
+        self.prefix_entry.insert(0,tpl.get("prefix",""))
+        self.suffix_entry.delete(0,tk.END)
+        self.suffix_entry.insert(0,tpl.get("suffix","_watermarked"))
+        self.format_var.set(tpl.get("format","PNG"))
+        self.update_preview()
+
+    def delete_template(self):
+        name=self.template_var.get()
+        if name in self.templates:
+            del self.templates[name]
+            self.save_templates()
+            self.update_template_menu()
+            messagebox.showinfo("模板删除","模板已删除！")
+
+    def update_template_menu(self):
+        menu=self.template_menu["menu"]
+        menu.delete(0,tk.END)
+        for name in self.templates.keys():
+            if name=="_last_used":
+                continue
+            menu.add_command(label=name,command=lambda v=name:self.select_template(v))
+
+    def select_template(self,name):
+        self.template_var.set(name)
+        self.load_template(name)
+
+    def save_templates(self):
+        with open(TEMPLATE_FILE,"w",encoding="utf-8") as f:
+            json.dump(self.templates,f,ensure_ascii=False,indent=2)
+
+    def load_templates(self):
+        if os.path.exists(TEMPLATE_FILE):
+            with open(TEMPLATE_FILE,"r",encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+# ===== 简单输入框 =====
+def simple_input(prompt):
+    win=tk.Toplevel()
+    win.title("输入")
+    tk.Label(win,text=prompt).pack(padx=10,pady=5)
+    entry=tk.Entry(win)
+    entry.pack(padx=10,pady=5)
+    res=[]
+    def ok():
+        res.append(entry.get())
+        win.destroy()
+    tk.Button(win,text="确定",command=ok).pack(pady=5)
+    win.grab_set()
+    win.wait_window()
+    return res[0] if res else None
+
+if __name__=="__main__":
+    root=tk.Tk()
     root.geometry("1000x700")
-    app = SimpleWatermarkApp(root)
+    app=SimpleWatermarkApp(root)
     root.mainloop()

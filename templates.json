@@ -1,0 +1,19 @@
+{
+  "模板1": {
+    "text": "示例水印",
+    "color": [
+      255,
+      0,
+      0
+    ],
+    "alpha": 100,
+    "position": "left_top",
+    "scale_mode": "width",
+    "scale_value": "1000",
+    "format": "PNG",
+    "shadow": true,
+    "outline": true,
+    "watermark_pos": null
+  },
+  "_last_used": "模板1"
+}
