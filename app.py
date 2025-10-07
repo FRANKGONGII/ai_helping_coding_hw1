@@ -8,13 +8,15 @@ SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
 class SimpleWatermarkApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("水印工具 - 阶段4（文字水印+阴影描边+尺寸调整+格式选择）")
+        self.root.title("水印工具 - 阶段5（文字水印+阴影描边+拖拽+尺寸调整+格式选择）")
         self.images = []
         self.current_image = None
         self.current_path = None
         self.current_color = (255, 255, 255)
         self.shadow_enabled = tk.BooleanVar(value=False)
         self.outline_enabled = tk.BooleanVar(value=False)
+        self.watermark_pos = None  # 拖拽坐标
+        self.drag_data = {"x": 0, "y": 0}
 
         # 左侧列表
         self.listbox = tk.Listbox(root, width=40)
@@ -25,14 +27,16 @@ class SimpleWatermarkApp:
         right_frame = tk.Frame(root)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # 预览区
-        self.preview_label = tk.Label(right_frame, bg="gray")
-        self.preview_label.pack(fill=tk.BOTH, expand=True)
+        # 预览区（Canvas，用于拖拽）
+        self.canvas = tk.Canvas(right_frame, bg="gray")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<ButtonPress-1>", self.start_drag)
+        self.canvas.bind("<B1-Motion>", self.drag_watermark)
+        self.canvas.bind("<ButtonRelease-1>", self.end_drag)
 
         # 控制区
         ctrl_frame = tk.Frame(right_frame)
         ctrl_frame.pack(fill=tk.X)
-
         tk.Button(ctrl_frame, text="导入图片", command=self.add_images).pack(side=tk.LEFT)
         tk.Button(ctrl_frame, text="导入文件夹", command=self.add_folder).pack(side=tk.LEFT)
         tk.Button(ctrl_frame, text="导出当前图片", command=self.export_current_image).pack(side=tk.LEFT)
@@ -41,7 +45,6 @@ class SimpleWatermarkApp:
         # 水印设置
         settings_frame = tk.LabelFrame(right_frame, text="水印设置")
         settings_frame.pack(fill=tk.X, pady=5)
-
         tk.Label(settings_frame, text="水印文字：").grid(row=0, column=0, sticky="w")
         self.text_entry = tk.Entry(settings_frame, width=20)
         self.text_entry.insert(0, "示例水印")
@@ -64,7 +67,6 @@ class SimpleWatermarkApp:
                                            command=lambda e: self.update_preview())
         self.position_menu.grid(row=2, column=1, sticky="we")
 
-        # 新增阴影和描边勾选框
         tk.Checkbutton(settings_frame, text="阴影", variable=self.shadow_enabled,
                        command=self.update_preview).grid(row=3, column=0, sticky="w")
         tk.Checkbutton(settings_frame, text="描边", variable=self.outline_enabled,
@@ -73,7 +75,6 @@ class SimpleWatermarkApp:
         # 导出设置
         export_frame = tk.LabelFrame(right_frame, text="导出设置")
         export_frame.pack(fill=tk.X, pady=5)
-
         tk.Label(export_frame, text="文件名前缀：").grid(row=0, column=0, sticky="w")
         self.prefix_entry = tk.Entry(export_frame, width=10)
         self.prefix_entry.grid(row=0, column=1, sticky="we")
@@ -98,7 +99,7 @@ class SimpleWatermarkApp:
         format_menu = tk.OptionMenu(export_frame, self.format_var, "PNG", "JPEG")
         format_menu.grid(row=4, column=1, sticky="we")
 
-    # ===== 字体选择函数 =====
+    # ===== 字体选择 =====
     def get_font(self, img_height):
         font_size = max(12, int(img_height * 0.05))
         win_font = "C:\\Windows\\Fonts\\msyh.ttc"
@@ -114,10 +115,8 @@ class SimpleWatermarkApp:
 
     # ===== 图片导入 =====
     def add_images(self):
-        files = filedialog.askopenfilenames(
-            title="选择图片",
-            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.tiff")]
-        )
+        files = filedialog.askopenfilenames(title="选择图片",
+                                            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.tiff")])
         self.add_image_list(files)
 
     def add_folder(self):
@@ -140,6 +139,7 @@ class SimpleWatermarkApp:
         idx = self.listbox.curselection()[0]
         self.current_path = self.images[idx]
         self.current_image = Image.open(self.current_path).convert("RGBA")
+        self.watermark_pos = None  # 每次切换图片重置拖拽
         self.update_preview()
 
     def update_preview(self):
@@ -147,18 +147,22 @@ class SimpleWatermarkApp:
             return
         text = self.text_entry.get()
         alpha = self.alpha_scale.get() / 100.0
-        position = self.position_var.get()
+        pos = self.watermark_pos if self.watermark_pos else self.position_var.get()
+
         preview_img = self.apply_watermark(
-            self.current_image, text, alpha, position,
+            self.current_image, text, alpha, pos,
             font=self.get_font(self.current_image.height),
             color=self.current_color,
             shadow=self.shadow_enabled.get(),
             outline=self.outline_enabled.get()
         )
+
         preview_resized = preview_img.copy()
-        preview_resized.thumbnail((400, 400))
+        preview_resized.thumbnail((600, 600))
         self.tk_preview = ImageTk.PhotoImage(preview_resized)
-        self.preview_label.config(image=self.tk_preview)
+
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_preview)
 
     # ===== 水印绘制 =====
     def apply_watermark(self, image, text, alpha, position, font=None, color=(255, 255, 255),
@@ -174,16 +178,14 @@ class SimpleWatermarkApp:
         text_w, text_h = text_size[2] - text_size[0], text_size[3] - text_size[1]
         margin = 20
 
-        if position == "left_top":
-            pos = (margin, margin)
-        elif position == "right_top":
-            pos = (img.width - text_w - margin, margin)
-        elif position == "left_bottom":
-            pos = (margin, img.height - text_h - margin)
-        elif position == "right_bottom":
-            pos = (img.width - text_w - margin, img.height - text_h - margin)
+        # 计算绘制位置
+        if isinstance(position, str):
+            # 字符串 -> 默认位置
+            pos = self.get_pixel_position(position, text_w, text_h)
         else:
-            pos = ((img.width - text_w) // 2, (img.height - text_h) // 2)
+            # 拖拽坐标
+            x, y = position
+            pos = (min(max(0, x), img.width - text_w), min(max(0, y), img.height - text_h))
 
         rgba = (*color, int(255 * alpha))
 
@@ -191,7 +193,8 @@ class SimpleWatermarkApp:
         if shadow:
             shadow_color = (0, 0, 0, int(255 * alpha))
             shadow_offset = (2, 2)
-            draw.text((pos[0] + shadow_offset[0], pos[1] + shadow_offset[1]), text, font=font, fill=shadow_color)
+            draw.text((pos[0] + shadow_offset[0], pos[1] + shadow_offset[1]),
+                      text, font=font, fill=shadow_color)
 
         # 描边效果
         if outline:
@@ -205,7 +208,55 @@ class SimpleWatermarkApp:
         draw.text(pos, text, font=font, fill=rgba)
         return Image.alpha_composite(img, txt_layer)
 
-    # ===== 调整尺寸 =====
+    # ===== 拖拽 =====
+    def start_drag(self, event):
+        if not self.current_image:
+            return
+        self.drag_data["x"] = event.x
+        self.drag_data["y"] = event.y
+
+    def drag_watermark(self, event):
+        if not self.current_image:
+            return
+        dx = event.x - self.drag_data["x"]
+        dy = event.y - self.drag_data["y"]
+        self.drag_data["x"] = event.x
+        self.drag_data["y"] = event.y
+
+        # 初始化拖拽坐标
+        if not self.watermark_pos:
+            font = self.get_font(self.current_image.height)
+            txt_layer = Image.new("RGBA", self.current_image.size, (255, 255, 255, 0))
+            draw = ImageDraw.Draw(txt_layer)
+            text_size = draw.textbbox((0, 0), self.text_entry.get(), font=font)
+            text_w = text_size[2] - text_size[0]
+            text_h = text_size[3] - text_size[1]
+            self.watermark_pos = self.get_pixel_position(self.position_var.get(), text_w, text_h)
+
+        x, y = self.watermark_pos
+        new_x = min(max(0, x + dx), self.current_image.width - 1)
+        new_y = min(max(0, y + dy), self.current_image.height - 1)
+        self.watermark_pos = (new_x, new_y)
+        self.update_preview()
+
+    def end_drag(self, event):
+        pass
+
+    def get_pixel_position(self, pos_str, text_w, text_h):
+        margin = 20
+        w, h = self.current_image.size
+        if pos_str == "left_top":
+            return (margin, margin)
+        elif pos_str == "right_top":
+            return (w - text_w - margin, margin)
+        elif pos_str == "left_bottom":
+            return (margin, h - text_h - margin)
+        elif pos_str == "right_bottom":
+            return (w - text_w - margin, h - text_h - margin)
+        else:
+            return ((w - text_w)//2, (h - text_h)//2)
+
+    # ===== 尺寸调整 =====
     def resize_image(self, img):
         mode = self.scale_mode.get()
         try:
@@ -254,20 +305,19 @@ class SimpleWatermarkApp:
 
         text = self.text_entry.get()
         alpha = self.alpha_scale.get() / 100.0
-        position = self.position_var.get()
+        pos_to_use = self.watermark_pos if self.watermark_pos else self.position_var.get()
         prefix = self.prefix_entry.get()
         suffix = self.suffix_entry.get()
         fmt = self.format_var.get()
 
         out_img = self.apply_watermark(
-            self.current_image, text, alpha, position,
+            self.current_image, text, alpha, pos_to_use,
             font=self.get_font(self.current_image.height),
             color=self.current_color,
             shadow=self.shadow_enabled.get(),
             outline=self.outline_enabled.get()
         )
         out_img = self.resize_image(out_img)
-
         name, _ = os.path.splitext(os.path.basename(self.current_path))
         out_path = os.path.join(out_dir, f"{prefix}{name}{suffix}.{fmt.lower()}")
         self.save_image(out_img, out_path, fmt)
@@ -286,7 +336,6 @@ class SimpleWatermarkApp:
         suffix = self.suffix_entry.get()
         text = self.text_entry.get()
         alpha = self.alpha_scale.get() / 100.0
-        position = self.position_var.get()
         fmt = self.format_var.get()
 
         count = 0
@@ -295,11 +344,14 @@ class SimpleWatermarkApp:
                 messagebox.showerror("错误", f"文件 {os.path.basename(path)} 位于输出目录中，导出已取消！")
                 return
             img = Image.open(path).convert("RGBA")
-            out_img = self.apply_watermark(img, text, alpha, position,
-                                           font=self.get_font(img.height),
-                                           color=self.current_color,
-                                           shadow=self.shadow_enabled.get(),
-                                           outline=self.outline_enabled.get())
+            pos_to_use = self.watermark_pos if self.watermark_pos else self.position_var.get()
+            out_img = self.apply_watermark(
+                img, text, alpha, pos_to_use,
+                font=self.get_font(img.height),
+                color=self.current_color,
+                shadow=self.shadow_enabled.get(),
+                outline=self.outline_enabled.get()
+            )
             out_img = self.resize_image(out_img)
             name, _ = os.path.splitext(os.path.basename(path))
             out_path = os.path.join(out_dir, f"{prefix}{name}{suffix}.{fmt.lower()}")
